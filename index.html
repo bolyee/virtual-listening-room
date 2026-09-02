@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Listening Room — Phase Check (Stage 4: air + wall absorption)</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c2027; --line: #2c323c; --text: #e6e9ef;
+    --muted: #8b95a6; --accent: #4da3ff; --warn: #ffb84d; --bad: #ff5f5f; --refl: #7be0a0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .wrap { display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; align-items: flex-start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 12px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  #stage { line-height: 0; }
+  canvas { border-radius: 6px; touch-action: none; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  .controls { width: 400px; display: flex; flex-direction: column; gap: 12px; }
+  button { background: #262c36; color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { background: #303845; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1420; font-weight: 600; }
+  button.small { padding: 3px 8px; font-size: 11px; }
+  select { background: #262c36; color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg label { padding: 6px 12px; cursor: pointer; font-size: 12px; background: #262c36; }
+  .seg label + label { border-left: 1px solid var(--line); }
+  .seg input { display: none; }
+  .seg label:has(input:checked) { background: var(--refl); color: #0b1420; font-weight: 600; }
+  input[type=range] { width: 100%; }
+  input[type=file] { font: inherit; color: var(--muted); max-width: 100%; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; color: var(--muted); }
+  th { color: var(--muted); font-weight: 400; position: sticky; top: 0; background: var(--panel); }
+  tr.o1 td { color: var(--refl); font-size: 11px; }
+  tr.o2 td { color: #5fb37c; font-size: 11px; }
+  tr.o3 td { color: #48876a; font-size: 11px; }
+  tr.muted td { opacity: .3; text-decoration: line-through; }
+  .scroll { max-height: 300px; overflow-y: auto; }
+  .warn { color: var(--warn); } .bad { color: var(--bad); } .ok { color: var(--refl); }
+  .hint { color: var(--muted); font-size: 12px; }
+  .nullbig { display: flex; gap: 10px; margin-bottom: 10px; }
+  .nullbig .cell { flex: 1; background: #0f1114; border: 1px solid var(--line);
+                   border-radius: 6px; padding: 8px 10px; text-align: center; }
+  .nullbig .cap { font-size: 10px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .nullbig .val { font-size: 24px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .nullbig .sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .counter { font-variant-numeric: tabular-nums; }
+  .bandtbl td, .bandtbl th { padding: 2px 5px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="panel" id="stage">
+    <canvas id="room" width="640" height="560"></canvas>
+  </div>
+
+  <div class="controls">
+
+    <div class="panel" id="analysisPanel">
+      <h2>Comb filtering <span class="hint">(direct paths only)</span></h2>
+      <div id="nullBig" class="nullbig"></div>
+      <table id="analysis"><tbody></tbody></table>
+      <div class="hint" style="margin-top:8px">
+        1st null comes from the L/R <b>direct</b> arrival difference. Pure geometry —
+        the absorption filters are a separate amplitude layer and do not move these numbers.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h1>Virtual Listening Room</h1>
+      <div class="hint">Image-source reflections + ISO 9613-1 air absorption + measured wall
+      absorption. No diffuse tail, no HRTF.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Reflection order</h2>
+      <div class="row" style="margin-bottom:10px">
+        <div class="seg" id="orderSeg">
+          <label><input type="radio" name="order" value="0"><span>None</span></label>
+          <label><input type="radio" name="order" value="1"><span>1st only</span></label>
+          <label><input type="radio" name="order" value="3" checked><span>up to 3rd</span></label>
+        </div>
+      </div>
+      <div class="row"><span class="hint">broadband wall reflection coef <b id="coefVal">0.60</b>
+        <span id="coefOrders" class="hint"></span></span></div>
+      <input type="range" id="coef" min="0" max="1" step="0.01" value="0.6">
+      <div class="row" style="margin-top:8px"><span class="hint counter" id="pathCount"></span></div>
+      <div class="row" style="margin-top:6px">
+        <label class="hint"><input type="checkbox" id="show3"> draw 3rd-order rays</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Absorption</h2>
+      <div class="row" style="margin-bottom:8px">
+        <label class="hint"><input type="checkbox" id="airOn" checked> air (ISO 9613-1)</label>
+        <label class="hint"><input type="checkbox" id="wallOn" checked> wall colour</label>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <select id="preset">
+          <option value="hard">Hard wall — concrete / gypsum</option>
+          <option value="soft">Soft room — carpet / curtains</option>
+        </select>
+      </div>
+      <table class="bandtbl" id="bandTable"></table>
+      <div class="hint" style="margin-top:6px">
+        Air: 20 °C, 50 %RH, 101.325 kPa — fixed, so α is a function of frequency only.
+        Wall: measured octave-band α, referenced to the least-absorbed band so the
+        colour is attenuation-only (≤ 0 dB everywhere) on top of the broadband coef.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Source</h2>
+      <div class="row" style="margin-bottom:8px"><input type="file" id="file" accept="audio/*"></div>
+      <div class="row" style="margin-bottom:8px">
+        <button id="play" class="primary" disabled>▶ Play</button>
+        <button id="stop" disabled>■ Stop</button>
+        <label class="hint"><input type="checkbox" id="loop" checked> loop</label>
+      </div>
+      <h2>Built-in test signals</h2>
+      <div class="row">
+        <button class="test" data-sig="mono">Mono noise (corr +1)</button>
+        <button class="test" data-sig="inv">Phase-inverted (corr −1)</button>
+        <button class="test" data-sig="decorr">Decorrelated</button>
+        <button class="test" data-sig="sweep">Mono sweep 40Hz–16k</button>
+      </div>
+      <div class="hint" id="srcName" style="margin-top:8px">no source loaded</div>
+    </div>
+
+    <div class="panel">
+      <h2>Output</h2>
+      <div class="row"><span class="hint">volume</span></div>
+      <input type="range" id="vol" min="0" max="1" step="0.01" value="0.7">
+      <div class="row" style="margin-top:8px"><button id="center">Reset to sweet spot</button></div>
+    </div>
+
+    <div class="panel">
+      <h2>Path readout <span class="hint">(loudest first)</span></h2>
+      <div class="row" style="margin-bottom:6px">
+        <button id="moreBtn" class="small">show all</button>
+        <span class="hint" id="listInfo"></span>
+      </div>
+      <div class="scroll">
+        <table id="paths">
+          <thead><tr><th>path</th><th>ord</th><th>dist</th><th>delay</th><th>gain</th><th>air</th><th>wall</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   1. ROOM / GEOMETRY CONFIG
+   Units: metres. Origin = front-left inside corner.
+   x -> right, y -> down (deeper into the room, away from the speakers).
+   Walls: x=0 (left), x=room.w (right), y=0 (front), y=room.d (back).
+   ========================================================================= */
+const CFG = {
+  room:        { w: 6.0, d: 5.0 },
+  speakerY:    1.0,
+  speakerSpan: 2.0,
+  headWidth:   0.18,
+  c:           343,
+  refDist:     1.0,
+  minDist:     0.15,
+  rampMs:      60,
+  maxDelay:    1.0,
+
+  maxOrder:            3,
+  wallReflectionCoef:  0.6,
+  reflectionGainFloorDb: -60,
+  draw3rdOrder:        false,
+
+  // --- stage 4 ---
+  airAbsorption: true,      // ISO 9613-1 loss, distance dependent
+  wallColour:    true,      // measured octave-band wall absorption, order dependent
+  wallPreset:    'hard'
+};
+
+function speakers() {
+  const cx = CFG.room.w / 2;
+  return { L: { x: cx - CFG.speakerSpan / 2, y: CFG.speakerY },
+           R: { x: cx + CFG.speakerSpan / 2, y: CFG.speakerY } };
+}
+
+const listener = { x: CFG.room.w / 2, y: CFG.speakerY + CFG.speakerSpan * Math.sqrt(3) / 2 };
+
+function ears() {
+  const h = CFG.headWidth / 2;
+  return { left:  { x: listener.x - h, y: listener.y },
+           right: { x: listener.x + h, y: listener.y } };
+}
+
+/* =========================================================================
+   2. AIR ABSORPTION — ISO 9613-1 at a fixed climate
+   20 °C / 50 %RH / 101.325 kPa are held constant, which makes the absorption
+   coefficient a pure function of frequency. To make humidity/temperature a
+   user control later, move AIR_CLIMATE into CFG and recompute AIR_ALPHA.
+   Sanity: this yields ~4.7 dB/km at 1 kHz and ~159 dB/km at 10 kHz.
+   ========================================================================= */
+const AIR_CLIMATE = {
+  T:   293.15,   // K, 20 °C
+  T0:  293.15,   // K, reference 20 °C
+  T01: 273.16,   // K, triple point of water
+  PaPr: 1,       // relative pressure (sea level standard => 1)
+  RH:  50        // %
+};
+
+function airAlphaDbPerM(f, cl = AIR_CLIMATE) {
+  const { T, T0, T01, PaPr, RH } = cl;
+  const PsatPr = Math.pow(10, -6.8346 * Math.pow(T01 / T, 1.261) + 4.6151);
+  const h = RH * (PsatPr / PaPr);                                  // molar water concentration
+  const frO = PaPr * (24 + 4.04e4 * h * (0.02 + h) / (0.391 + h)); // O2 relaxation freq
+  const frN = PaPr * Math.pow(T / T0, -0.5) *
+              (9 + 280 * h * Math.exp(-4.170 * (Math.pow(T / T0, -1 / 3) - 1)));
+  return 8.686 * f * f * (
+      1.84e-11 * (1 / PaPr) * Math.pow(T / T0, 0.5)
+    + Math.pow(T / T0, -2.5) * (
+        0.01275 * Math.exp(-2239.1 / T) / (frO + f * f / frO)
+      + 0.1068  * Math.exp(-3352.0 / T) / (frN + f * f / frN)
+      )
+  );
+}
+
+/* =========================================================================
+   3. OCTAVE-BAND EQ INFRASTRUCTURE
+   Six bands, realised as a graphic EQ: lowshelf, 4 x peaking, highshelf.
+   Shelves and peaks overlap, so setting filter j to the wanted band gain does
+   NOT give that gain at band j. We precompute the 6x6 interaction matrix
+   (dB at band i per dB of filter j) once and invert it, so a target curve maps
+   straight onto filter gains that actually realise it.
+   ========================================================================= */
+const BANDS = [125, 250, 500, 1000, 2000, 4000];
+const BAND_TYPE = ['lowshelf', 'peaking', 'peaking', 'peaking', 'peaking', 'highshelf'];
+const BAND_Q = 1.4;                    // ~1 octave bandwidth for the peaking sections
+
+const AIR_ALPHA = BANDS.map(f => airAlphaDbPerM(f));   // dB per metre, per band
+
+/* Measured octave-band absorption coefficients (ASTM C423 style, 6 bands).
+   hard: gypsum/concrete — slight LF panel absorption, nearly flat above.
+   soft: carpet + curtains — strong mid/HF absorption. */
+const WALL_PRESETS = {
+  hard: { name: 'Hard wall (concrete / gypsum)', alpha: [0.10, 0.08, 0.05, 0.03, 0.03, 0.03] },
+  soft: { name: 'Soft room (carpet / curtains)', alpha: [0.07, 0.31, 0.49, 0.75, 0.70, 0.60] }
+};
+
+/* Per-bounce band loss in dB from the energy reflection coefficient (1 - alpha),
+   referenced so the curve carries colour only — the overall level is already
+   handled by CFG.wallReflectionCoef and must not be counted twice.
+
+   The reference is always the band the material absorbs LEAST (max of the raw
+   losses, i.e. min alpha), whatever the preset. Subtracting a constant does not
+   change the shape, so the no-double-counting property holds for any choice of
+   reference — but this one pins the curve's ceiling at 0 dB, so every band is
+   pure attenuation and a reflection can never be boosted above its broadband
+   level. Referencing a heavily absorbed band instead (1 kHz on the soft preset,
+   alpha = 0.75) would lift every other band by up to +17 dB at 3rd order and let
+   reflections outrun the direct sound at LF. */
+function wallBandDb(presetKey = CFG.wallPreset) {
+  const raw = WALL_PRESETS[presetKey].alpha.map(v => 10 * Math.log10(1 - v));
+  const ref = Math.max(...raw);                  // least-absorbed band = 0 dB
+  return raw.map(v => v - ref);
+}
+
+/* ---- analytic biquad (matches the Web Audio / RBJ cookbook) --------------- */
+function biquadCoefs(type, f0, Q, gainDb, sr) {
+  const A = Math.pow(10, gainDb / 40);
+  const w0 = 2 * Math.PI * f0 / sr, cw = Math.cos(w0), sw = Math.sin(w0);
+  let b0, b1, b2, a0, a1, a2;
+  if (type === 'peaking') {
+    const al = sw / (2 * Q);
+    b0 = 1 + al * A; b1 = -2 * cw; b2 = 1 - al * A;
+    a0 = 1 + al / A; a1 = -2 * cw; a2 = 1 - al / A;
+  } else {
+    const al = sw / 2 * Math.SQRT2;               // shelf slope S = 1
+    const s = 2 * Math.sqrt(A) * al;
+    if (type === 'lowshelf') {
+      b0 =  A * ((A + 1) - (A - 1) * cw + s);
+      b1 =  2 * A * ((A - 1) - (A + 1) * cw);
+      b2 =  A * ((A + 1) - (A - 1) * cw - s);
+      a0 =  (A + 1) + (A - 1) * cw + s;
+      a1 = -2 * ((A - 1) + (A + 1) * cw);
+      a2 =  (A + 1) + (A - 1) * cw - s;
+    } else {
+      b0 =  A * ((A + 1) + (A - 1) * cw + s);
+      b1 = -2 * A * ((A - 1) + (A + 1) * cw);
+      b2 =  A * ((A + 1) + (A - 1) * cw - s);
+      a0 =  (A + 1) - (A - 1) * cw + s;
+      a1 =  2 * ((A - 1) - (A + 1) * cw);
+      a2 =  (A + 1) - (A - 1) * cw - s;
+    }
+  }
+  return [b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0];
+}
+
+function biquadAt(c, f, sr) {
+  const w = 2 * Math.PI * f / sr;
+  const c1 = Math.cos(-w), s1 = Math.sin(-w), c2 = Math.cos(-2 * w), s2 = Math.sin(-2 * w);
+  const nr = c[0] + c[1] * c1 + c[2] * c2, ni = c[1] * s1 + c[2] * s2;
+  const dr = 1 + c[3] * c1 + c[4] * c2,    di = c[3] * s1 + c[4] * s2;
+  const mag = Math.hypot(nr, ni) / Math.hypot(dr, di);
+  return { mag, phase: Math.atan2(ni, nr) - Math.atan2(di, dr) };
+}
+
+/* 6x6 inverse of the band-interaction matrix, so target dB -> filter dB. */
+let EQ_MINV = null, EQ_SR = 48000;
+
+function buildEqMatrix(sr) {
+  EQ_SR = sr;
+  const probe = 6;                                  // linearise around +6 dB
+  const M = [];
+  for (let i = 0; i < 6; i++) M.push(new Array(6).fill(0));
+  for (let j = 0; j < 6; j++) {
+    const c = biquadCoefs(BAND_TYPE[j], BANDS[j], BAND_Q, probe, sr);
+    for (let i = 0; i < 6; i++) M[i][j] = 20 * Math.log10(biquadAt(c, BANDS[i], sr).mag) / probe;
+  }
+  EQ_MINV = invert6(M);
+}
+
+function invert6(M) {
+  const n = 6, A = M.map((r, i) => [...r, ...Array.from({ length: n }, (_, k) => (k === i ? 1 : 0))]);
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(A[r][col]) > Math.abs(A[piv][col])) piv = r;
+    [A[col], A[piv]] = [A[piv], A[col]];
+    const d = A[col][col];
+    for (let k = 0; k < 2 * n; k++) A[col][k] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = A[r][col];
+      if (!f) continue;
+      for (let k = 0; k < 2 * n; k++) A[r][k] -= f * A[col][k];
+    }
+  }
+  return A.map(r => r.slice(n));
+}
+
+// Realised response (dB at each band centre) of a given set of filter gains.
+function realiseGains(g) {
+  const out = new Array(6).fill(0);
+  for (let j = 0; j < 6; j++) {
+    if (Math.abs(g[j]) < 1e-6) continue;
+    const c = biquadCoefs(BAND_TYPE[j], BANDS[j], BAND_Q, g[j], EQ_SR);
+    for (let i = 0; i < 6; i++) out[i] += 20 * Math.log10(biquadAt(c, BANDS[i], EQ_SR).mag);
+  }
+  return out;
+}
+
+function applyMinv(v) {
+  const g = new Array(6).fill(0);
+  for (let i = 0; i < 6; i++) {
+    let s = 0;
+    for (let j = 0; j < 6; j++) s += EQ_MINV[i][j] * v[j];
+    g[i] = s;
+  }
+  return g;
+}
+
+/* target band curve (dB) -> the 6 filter gains that realise it.
+   The inverse matrix is a linearisation around a small probe gain, so it is
+   exact enough for gentle curves (air: < 0.01 dB error) but drifts on steep
+   ones. When the target is large, refine with a couple of Newton steps using
+   the true biquad response — cheap, because steep curves only occur on the
+   shared wall EQ (a handful of distinct curves), not per path per frame. */
+const EQ_REFINE_ABOVE_DB = 3;
+function targetToFilterGains(target) {
+  if (!EQ_MINV) buildEqMatrix(EQ_SR);
+  const clamp = a => a.map(v => Math.max(-40, Math.min(40, v)));
+  let g = clamp(applyMinv(target));
+  const steep = target.some(v => Math.abs(v) > EQ_REFINE_ABOVE_DB);
+  if (steep) {
+    for (let it = 0; it < 3; it++) {
+      const got = realiseGains(g);
+      const resid = target.map((t, i) => t - got[i]);
+      if (Math.max(...resid.map(Math.abs)) < 0.02) break;
+      const step = applyMinv(resid);
+      g = clamp(g.map((v, i) => v + step[i]));
+    }
+  }
+  return g;
+}
+
+/* =========================================================================
+   4. IMAGE SOURCE METHOD (recursive, up to CFG.maxOrder)
+   Mirroring a source across a wall gives a virtual source whose straight-line
+   distance to the ear equals the true folded path length. Recursing gives
+   higher orders. Never reflect off the wall just used, so branching is
+   4, then 3 per level: 4 + 12 + 36 = 52 images per speaker.
+   ========================================================================= */
+const WALLS = [
+  { id: 'L', name: 'left',  axis: 'x', at: 0 },
+  { id: 'R', name: 'right', axis: 'x', at: CFG.room.w },
+  { id: 'F', name: 'front', axis: 'y', at: 0 },
+  { id: 'B', name: 'back',  axis: 'y', at: CFG.room.d }
+];
+
+function mirror(p, wall) {
+  return wall.axis === 'x' ? { x: 2 * wall.at - p.x, y: p.y }
+                           : { x: p.x, y: 2 * wall.at - p.y };
+}
+
+function generateImageSources(spkPos, maxOrder) {
+  const root = { pos: spkPos, order: 0, walls: [], chain: [] };
+  const all = [root];
+  let frontier = [root];
+  for (let o = 1; o <= maxOrder; o++) {
+    const next = [];
+    for (const src of frontier) {
+      const last = src.walls[src.walls.length - 1];
+      for (const w of WALLS) {
+        if (last && w.id === last.id) continue;      // no immediate re-reflection
+        const pos = mirror(src.pos, w);
+        const node = { pos, order: o, walls: [...src.walls, w], chain: [...src.chain, pos] };
+        next.push(node); all.push(node);
+      }
+    }
+    frontier = next;
+  }
+  return all;
+}
+
+function wallHit(img, target, wall) {
+  const a = wall.axis === 'x' ? img.x : img.y;
+  const b = wall.axis === 'x' ? target.x : target.y;
+  const den = b - a;
+  if (Math.abs(den) < 1e-12) return null;
+  const t = (wall.at - a) / den;
+  if (t < 0 || t > 1) return null;
+  const P = { x: img.x + t * (target.x - img.x), y: img.y + t * (target.y - img.y) };
+  const lat   = wall.axis === 'x' ? P.y : P.x;
+  const limit = wall.axis === 'x' ? CFG.room.d : CFG.room.w;
+  if (lat < -1e-9 || lat > limit + 1e-9) return null;
+  return P;
+}
+
+// Unfold backwards from the ear; every bounce must land inside its wall.
+function tracePath(path, earPos) {
+  if (path.order === 0) return [];
+  const pts = [];
+  let target = earPos;
+  for (let k = path.order - 1; k >= 0; k--) {
+    const P = wallHit(path.chain[k], target, path.walls[k]);
+    if (!P) return null;
+    pts.unshift(P);
+    target = P;
+  }
+  return pts;
+}
+
+/* =========================================================================
+   5. PATH TABLE + PRUNING + PER-PATH SOLVE
+   ========================================================================= */
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function distanceGain(d) { return CFG.refDist / Math.max(d, CFG.minDist); }
+const dB = g => 20 * Math.log10(Math.max(g, 1e-12));
+
+/* One path: source coord -> distance -> delay, broadband gain, and the two
+   octave-band curves. Same function for direct and every reflection order;
+   only `coef` and `order` differ. Air depends on distance travelled, wall
+   colour on how many bounces happened. */
+function solveOne(srcPos, earPos, coef, order) {
+  const d = dist(srcPos, earPos);
+  const air = AIR_ALPHA.map(a => CFG.airAbsorption ? -a * d : 0);
+  const wcurve = (CFG.wallColour && order > 0) ? wallBandDb() : null;
+  const wall = wcurve ? wcurve.map(v => v * order) : [0, 0, 0, 0, 0, 0];
+  return { dist: d, delay: d / CFG.c, gain: distanceGain(d) * coef, air, wall };
+}
+
+const orderCoef = order => Math.pow(CFG.wallReflectionCoef, order);
+
+function nearestReachableDist(pos) {
+  const m = CFG.headWidth / 2 + 0.05;
+  const cx = Math.min(Math.max(pos.x, m), CFG.room.w - m);
+  const cy = Math.min(Math.max(pos.y, m), CFG.room.d - m);
+  return Math.hypot(pos.x - cx, pos.y - cy);
+}
+
+let PATHS = [], POSSIBLE = 0;
+
+function buildPaths() {
+  const spk = speakers();
+  const earTag = e => (e === 'left' ? 'L' : 'R');
+  const kept = [];
+  let possible = 0;
+  for (const s of ['L', 'R']) {
+    for (const img of generateImageSources(spk[s], CFG.maxOrder)) {
+      for (const ear of ['left', 'right']) {
+        possible++;
+        const best = distanceGain(nearestReachableDist(img.pos)) * orderCoef(img.order);
+        if (img.order > 0 && dB(best) < CFG.reflectionGainFloorDb) continue;   // static prune
+        const seq = img.walls.map(w => w.id).join(',');
+        kept.push({
+          id: `${s}_${img.order}_${seq || 'D'}_${earTag(ear)}_${kept.length}`,
+          spk: s, ear, order: img.order,
+          walls: img.walls, chain: img.chain, pos: img.pos,
+          label: img.order === 0 ? `${s} spk → ${earTag(ear)} ear`
+                                 : `${s} spk → wall(${seq}) → ${earTag(ear)} ear`
+        });
+      }
+    }
+  }
+  PATHS = kept; POSSIBLE = possible;
+}
+
+function solvePaths() {
+  const spk = speakers(), ear = ears();
+  const floor = Math.pow(10, CFG.reflectionGainFloorDb / 20);
+  return PATHS.map(p => {
+    const target = ear[p.ear];
+    const bounces = tracePath(p, target);
+    const valid = bounces !== null;
+    const s = solveOne(p.pos, target, orderCoef(p.order), p.order);
+    const muted = p.order > 0 && (!valid || s.gain < floor);
+    return { ...p, ...s, real: spk[p.spk], bounces: bounces || [], valid, muted };
+  });
+}
+
+/* =========================================================================
+   6. AUDIO GRAPH
+
+     bufferSource -> ChannelSplitter(2)
+        ch0 = L feed, ch1 = R feed
+          per path:  delay -> gain -> airEQ(6 biquads) -> bus[spk][ear][order]
+        per (spk, ear, order) bus:
+          order 0 :  bus -> merger[ear]                       (direct, no wall)
+          order n :  bus -> wallEQ(6 biquads) -> merger[ear]
+     ChannelMerger(2) -> masterGain -> destination
+
+   The wall colour depends only on (preset, order), never on position, so all
+   paths of one order share a single wall EQ. Filtering a sum equals summing
+   the filtered signals, so this is exact — and it collapses ~1200 wall
+   biquads down to 72.
+   ========================================================================= */
+let ctx = null, splitter = null, merger = null, master = null;
+let nodes = {}, buses = [];
+let srcNode = null, srcBuffer = null, playing = false;
+
+function initAudio() {
+  if (ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  buildEqMatrix(ctx.sampleRate);
+  splitter = ctx.createChannelSplitter(2);
+  merger   = ctx.createChannelMerger(2);
+  master   = ctx.createGain();
+  master.gain.value = parseFloat(volEl.value);
+  merger.connect(master);
+  master.connect(ctx.destination);
+  wireNodes(true);
+}
+
+function makeEqChain() {
+  const chain = [];
+  for (let i = 0; i < 6; i++) {
+    const f = ctx.createBiquadFilter();
+    f.type = BAND_TYPE[i];
+    f.frequency.value = BANDS[i];
+    if (BAND_TYPE[i] === 'peaking') f.Q.value = BAND_Q;
+    f.gain.value = 0;
+    chain.push(f);
+  }
+  for (let i = 1; i < chain.length; i++) chain[i - 1].connect(chain[i]);
+  return chain;
+}
+
+function wireNodes(immediate) {
+  if (!ctx) return;
+  const earChannel = { left: 0, right: 1 };
+  const spkChannel = { L: 0, R: 1 };
+  nodes = {}; buses = {};
+
+  // one shared wall EQ per (speaker, ear, order)
+  const orders = new Set(PATHS.map(p => p.order));
+  for (const s of ['L', 'R']) for (const e of ['left', 'right']) for (const o of orders) {
+    const bus = ctx.createGain();
+    const key = `${s}|${e}|${o}`;
+    if (o === 0) {
+      bus.connect(merger, 0, earChannel[e]);          // direct sound never touched a wall
+      buses[key] = { bus, wall: null };
+    } else {
+      const wall = makeEqChain();
+      bus.connect(wall[0]);
+      wall[5].connect(merger, 0, earChannel[e]);
+      buses[key] = { bus, wall };
+    }
+  }
+
+  for (const p of PATHS) {
+    const delay = ctx.createDelay(CFG.maxDelay);
+    const gain  = ctx.createGain();
+    const air   = makeEqChain();
+    gain.gain.value = 0;                              // always fade up, never pop in
+    splitter.connect(delay, spkChannel[p.spk]);
+    delay.connect(gain);
+    gain.connect(air[0]);
+    air[5].connect(buses[`${p.spk}|${p.ear}|${p.order}`].bus);
+    nodes[p.id] = { delay, gain, air, last: { gain: -1, air: null } };
+  }
+  applyPaths(immediate);
+}
+
+let rebuilding = false;
+function rebuildGraph() {
+  buildPaths();
+  if (!ctx) { update(); return; }
+  if (rebuilding) return;
+  rebuilding = true;
+  const now = ctx.currentTime, ramp = CFG.rampMs / 1000;
+  for (const id in nodes) setSmooth(nodes[id].gain.gain, 0, now, ramp, false);
+  const oldNodes = nodes, oldBuses = buses;
+  setTimeout(() => {
+    for (const id in oldNodes) {
+      const n = oldNodes[id];
+      n.gain.disconnect(); n.delay.disconnect();
+      n.air.forEach(f => f.disconnect());
+    }
+    for (const k in oldBuses) {
+      oldBuses[k].bus.disconnect();
+      if (oldBuses[k].wall) oldBuses[k].wall.forEach(f => f.disconnect());
+    }
+    wireNodes(false);
+    rebuilding = false;
+    update();
+  }, CFG.rampMs + 20);
+  update();
+}
+
+/* Push solved values into the AudioParams. Every change is a linear ramp —
+   delay jumps are the main click source when the listener moves.
+   Filter gains are only rewritten when they actually moved, which keeps the
+   per-frame API call count down with 200+ paths x 6 bands. */
+function applyPaths(immediate = false) {
+  const solved = solvePaths();
+  if (ctx && !rebuilding) {
+    const now = ctx.currentTime, ramp = CFG.rampMs / 1000;
+
+    // shared wall EQs: colour x order, position independent
+    const wcurve = CFG.wallColour ? wallBandDb() : [0, 0, 0, 0, 0, 0];
+    for (const k in buses) {
+      const b = buses[k];
+      if (!b.wall) continue;
+      const order = parseInt(k.split('|')[2], 10);
+      const g = targetToFilterGains(wcurve.map(v => v * order));
+      for (let i = 0; i < 6; i++) setSmooth(b.wall[i].gain, g[i], now, ramp, immediate);
+    }
+
+    for (const p of solved) {
+      const n = nodes[p.id];
+      if (!n) continue;
+      setSmooth(n.delay.delayTime, Math.min(p.delay, CFG.maxDelay), now, ramp, immediate);
+      setSmooth(n.gain.gain, p.muted ? 0 : p.gain, now, ramp, false);
+      if (p.muted) continue;                          // silent path: filters can't be heard
+      const g = targetToFilterGains(p.air);
+      const last = n.last.air;
+      for (let i = 0; i < 6; i++) {
+        if (last && Math.abs(last[i] - g[i]) < 0.02) continue;   // below audibility, skip write
+        setSmooth(n.air[i].gain, g[i], now, ramp, immediate);
+      }
+      n.last.air = g;
+    }
+  }
+  return solved;
+}
+
+function setSmooth(param, target, now, ramp, immediate) {
+  param.cancelScheduledValues(now);
+  if (immediate) param.setValueAtTime(target, now);
+  else {
+    param.setValueAtTime(param.value, now);
+    param.linearRampToValueAtTime(target, now + ramp);
+  }
+}
+
+/* ---- source handling ---------------------------------------------------- */
+function toStereo(buf) {
+  if (buf.numberOfChannels >= 2) return buf;
+  const out = ctx.createBuffer(2, buf.length, buf.sampleRate);
+  const src = buf.getChannelData(0);
+  out.copyToChannel(src, 0); out.copyToChannel(src, 1);
+  return out;
+}
+
+function loadBuffer(buf, label) {
+  srcBuffer = toStereo(buf);
+  srcName.textContent = label + '  ·  ' + srcBuffer.duration.toFixed(2) + 's  ·  ' +
+                        srcBuffer.sampleRate + 'Hz';
+  playBtn.disabled = false;
+  if (playing) { stop(); play(); }
+}
+
+function play() {
+  if (!srcBuffer) return;
+  initAudio();
+  if (ctx.state === 'suspended') ctx.resume();
+  stop();
+  srcNode = ctx.createBufferSource();
+  srcNode.buffer = srcBuffer;
+  srcNode.loop = loopEl.checked;
+  srcNode.connect(splitter);
+  srcNode.onended = () => { if (srcNode) { playing = false; syncButtons(); } };
+  srcNode.start();
+  playing = true; syncButtons();
+}
+
+function stop() {
+  if (srcNode) {
+    srcNode.onended = null;
+    try { srcNode.stop(); } catch (e) {}
+    srcNode.disconnect(); srcNode = null;
+  }
+  playing = false; syncButtons();
+}
+
+function syncButtons() {
+  playBtn.disabled = !srcBuffer;
+  stopBtn.disabled = !playing;
+  playBtn.textContent = playing ? '▶ Restart' : '▶ Play';
+}
+
+/* ---- built-in test signals ---------------------------------------------- */
+function makeTestSignal(kind) {
+  initAudio();
+  const sr = ctx.sampleRate;
+  const dur = kind === 'sweep' ? 8 : 4;
+  const n = Math.floor(sr * dur);
+  const buf = ctx.createBuffer(2, n, sr);
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  if (kind === 'sweep') {
+    const f0 = 40, f1 = 16000, T = dur;
+    const K = T * f0 / Math.log(f1 / f0);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      const s = 0.5 * Math.sin(2 * Math.PI * K * (Math.exp(t / (T / Math.log(f1 / f0))) - 1));
+      L[i] = s; R[i] = s;
+    }
+  } else {
+    const pink = () => {
+      let b0 = 0, b1 = 0, b2 = 0;
+      return () => {
+        const w = Math.random() * 2 - 1;
+        b0 = 0.99765 * b0 + w * 0.0990460;
+        b1 = 0.96300 * b1 + w * 0.2965164;
+        b2 = 0.57000 * b2 + w * 1.0526913;
+        return (b0 + b1 + b2 + w * 0.1848) * 0.22;
+      };
+    };
+    const pa = pink(), pb = pink();
+    for (let i = 0; i < n; i++) {
+      const a = pa();
+      if (kind === 'mono')     { L[i] = a;  R[i] = a;  }
+      else if (kind === 'inv') { L[i] = a;  R[i] = -a; }
+      else                     { L[i] = a;  R[i] = pb(); }
+    }
+    const f = Math.min(1024, n >> 2);
+    for (let i = 0; i < f; i++) {
+      const g = i / f;
+      L[i] *= g; R[i] *= g; L[n - 1 - i] *= g; R[n - 1 - i] *= g;
+    }
+  }
+  const names = { mono: 'mono noise (corr +1)', inv: 'phase-inverted noise (corr −1)',
+                  decorr: 'decorrelated noise', sweep: 'mono log sweep 40Hz–16k' };
+  loadBuffer(buf, names[kind]);
+}
+
+/* =========================================================================
+   7. UI — top-down canvas
+   ========================================================================= */
+const cv = document.getElementById('room');
+const g2 = cv.getContext('2d');
+const PAD = 40;
+const SCALE = Math.min((cv.width - PAD * 2) / CFG.room.w, (cv.height - PAD * 2) / CFG.room.d);
+const OX = (cv.width - CFG.room.w * SCALE) / 2;
+const OY = (cv.height - CFG.room.d * SCALE) / 2;
+const m2px = p => ({ x: OX + p.x * SCALE, y: OY + p.y * SCALE });
+const px2m = (x, y) => ({ x: (x - OX) / SCALE, y: (y - OY) / SCALE });
+
+const ORDER_STYLE = {
+  1: { alpha: 0.30, width: 1.1, dash: [4, 4] },
+  2: { alpha: 0.15, width: 0.8, dash: [3, 5] },
+  3: { alpha: 0.07, width: 0.6, dash: [2, 6] }
+};
+
+function draw(solved) {
+  const spk = speakers(), ear = ears();
+  g2.clearRect(0, 0, cv.width, cv.height);
+  g2.fillStyle = '#0f1114';
+  g2.fillRect(OX, OY, CFG.room.w * SCALE, CFG.room.d * SCALE);
+  g2.strokeStyle = '#3a424f'; g2.lineWidth = 2;
+  g2.strokeRect(OX, OY, CFG.room.w * SCALE, CFG.room.d * SCALE);
+
+  g2.strokeStyle = 'rgba(255,255,255,.05)'; g2.lineWidth = 1;
+  for (let x = 1; x < CFG.room.w; x++) {
+    const p = m2px({ x, y: 0 });
+    g2.beginPath(); g2.moveTo(p.x, OY); g2.lineTo(p.x, OY + CFG.room.d * SCALE); g2.stroke();
+  }
+  for (let y = 1; y < CFG.room.d; y++) {
+    const p = m2px({ x: 0, y });
+    g2.beginPath(); g2.moveTo(OX, p.y); g2.lineTo(OX + CFG.room.w * SCALE, p.y); g2.stroke();
+  }
+  g2.strokeStyle = 'rgba(77,163,255,.25)'; g2.setLineDash([5, 5]);
+  const cxp = m2px({ x: CFG.room.w / 2, y: 0 });
+  g2.beginPath(); g2.moveTo(cxp.x, OY); g2.lineTo(cxp.x, OY + CFG.room.d * SCALE); g2.stroke();
+  g2.setLineDash([]);
+
+  for (const ord of [3, 2, 1]) {
+    if (ord > CFG.maxOrder) continue;
+    if (ord === 3 && !CFG.draw3rdOrder) continue;
+    const st = ORDER_STYLE[ord];
+    g2.setLineDash(st.dash); g2.lineWidth = st.width;
+    g2.strokeStyle = `rgba(123,224,160,${st.alpha})`;
+    for (const p of solved) {
+      if (p.order !== ord || p.muted || !p.bounces.length) continue;
+      const poly = [spk[p.spk], ...p.bounces, ear[p.ear]].map(m2px);
+      g2.beginPath(); g2.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i++) g2.lineTo(poly[i].x, poly[i].y);
+      g2.stroke();
+    }
+    if (ord === 1) {
+      g2.fillStyle = 'rgba(123,224,160,.55)';
+      for (const p of solved) {
+        if (p.order !== 1 || p.muted || !p.bounces.length) continue;
+        const b = m2px(p.bounces[0]);
+        g2.fillRect(b.x - 2, b.y - 2, 4, 4);
+      }
+    }
+  }
+  g2.setLineDash([]);
+
+  for (const p of solved) {
+    if (p.order !== 0) continue;
+    const a = m2px(spk[p.spk]), b = m2px(ear[p.ear]);
+    g2.strokeStyle = p.spk === 'L' ? 'rgba(255,184,77,.55)' : 'rgba(77,163,255,.55)';
+    g2.lineWidth = 1.5;
+    g2.beginPath(); g2.moveTo(a.x, a.y); g2.lineTo(b.x, b.y); g2.stroke();
+  }
+
+  for (const k of ['L', 'R']) {
+    const p = m2px(spk[k]);
+    g2.fillStyle = k === 'L' ? '#ffb84d' : '#4da3ff';
+    g2.fillRect(p.x - 11, p.y - 8, 22, 16);
+    g2.fillStyle = '#0b1420';
+    g2.font = 'bold 11px ui-monospace, monospace';
+    g2.textAlign = 'center'; g2.textBaseline = 'middle';
+    g2.fillText(k, p.x, p.y + 1);
+  }
+
+  const lp = m2px(listener);
+  const headR = Math.max(9, (CFG.headWidth / 2) * SCALE);
+  g2.fillStyle = 'rgba(230,233,239,.12)'; g2.strokeStyle = '#e6e9ef'; g2.lineWidth = 2;
+  g2.beginPath(); g2.arc(lp.x, lp.y, headR, 0, Math.PI * 2); g2.fill(); g2.stroke();
+  g2.beginPath(); g2.moveTo(lp.x, lp.y - headR); g2.lineTo(lp.x, lp.y - headR - 8); g2.stroke();
+  for (const [side, e] of Object.entries(ear)) {
+    const p = m2px(e);
+    g2.fillStyle = side === 'left' ? '#ffb84d' : '#4da3ff';
+    g2.beginPath(); g2.arc(p.x, p.y, 3.5, 0, Math.PI * 2); g2.fill();
+  }
+
+  g2.fillStyle = '#8b95a6'; g2.font = '11px ui-monospace, monospace';
+  g2.textAlign = 'left'; g2.textBaseline = 'top';
+  g2.fillText(`listener  x=${listener.x.toFixed(2)} m   y=${listener.y.toFixed(2)} m`, OX + 6, OY + 6);
+  g2.fillText(CFG.maxOrder === 0 ? 'reflections OFF · direct only'
+    : `reflections ≤ order ${CFG.maxOrder} · coef ${CFG.wallReflectionCoef.toFixed(2)}`, OX + 6, OY + 22);
+  g2.fillText(`air ${CFG.airAbsorption ? 'ON' : 'OFF'} · wall colour ${CFG.wallColour ? WALL_PRESETS[CFG.wallPreset].name : 'OFF'}`,
+              OX + 6, OY + 38);
+  g2.fillText(`room ${CFG.room.w}×${CFG.room.d} m   spk span ${CFG.speakerSpan} m   head ${(CFG.headWidth*100).toFixed(0)} cm`,
+              OX + 6, OY + CFG.room.d * SCALE - 18);
+}
+
+/* ---- numeric readout ---------------------------------------------------- */
+const pathBody = document.querySelector('#paths tbody');
+const anaBody  = document.querySelector('#analysis tbody');
+const nullBig  = document.getElementById('nullBig');
+const bandTable= document.getElementById('bandTable');
+const TOP_N = 12;
+let showAll = false;
+
+const fmtBand = f => f >= 1000 ? (f / 1000) + 'k' : String(f);
+// most prominent band of a curve, for a one-glance summary
+function peakBand(curve) {
+  let bi = 0;
+  for (let i = 1; i < 6; i++) if (Math.abs(curve[i]) > Math.abs(curve[bi])) bi = i;
+  return Math.abs(curve[bi]) < 0.05 ? '—'
+       : `${curve[bi] > 0 ? '+' : ''}${curve[bi].toFixed(1)}@${fmtBand(BANDS[bi])}`;
+}
+
+function renderBandTable() {
+  const w = wallBandDb();
+  const head = '<tr><th>band</th>' + BANDS.map(b => `<th>${fmtBand(b)}</th>`).join('') + '</tr>';
+  const air20 = AIR_ALPHA.map(a => (-a * 20).toFixed(2));
+  const rows =
+    `<tr><td>air α (dB/m)</td>${AIR_ALPHA.map(a => `<td>${a.toFixed(4)}</td>`).join('')}</tr>` +
+    `<tr><td>air @20 m (dB)</td>${air20.map(v => `<td>${v}</td>`).join('')}</tr>` +
+    `<tr><td>wall α</td>${WALL_PRESETS[CFG.wallPreset].alpha.map(a => `<td>${a.toFixed(2)}</td>`).join('')}</tr>` +
+    `<tr><td>wall dB /bounce (≤0)</td>${w.map(v => `<td>${v >= 0 ? '+' : ''}${v.toFixed(2)}</td>`).join('')}</tr>`;
+  bandTable.innerHTML = head + rows;
+}
+
+function readout(solved) {
+  const rows = [...solved].sort((a, b) => (a.muted - b.muted) || (b.gain - a.gain));
+  const shown = showAll ? rows : rows.slice(0, TOP_N);
+  pathBody.innerHTML = shown.map(p => {
+    const cls = (p.order ? 'o' + p.order + ' ' : '') + (p.muted ? 'muted' : '');
+    return `<tr class="${cls.trim()}">
+        <td>${p.label}</td><td>${p.order}</td>
+        <td>${p.dist.toFixed(2)}</td>
+        <td>${(p.delay * 1000).toFixed(2)}</td>
+        <td>${dB(p.gain).toFixed(1)}</td>
+        <td>${peakBand(p.air)}</td>
+        <td>${peakBand(p.wall)}</td></tr>`;
+  }).join('');
+  listInfo.textContent = `${shown.length} / ${rows.length} rows`;
+  moreBtn.textContent = showAll ? 'show top ' + TOP_N : 'show all';
+
+  const by = {};
+  for (const p of solved) if (p.order === 0) by[p.spk + p.ear[0]] = p;
+  const direct = solved.filter(p => p.order === 0);
+  const refl   = solved.filter(p => p.order > 0 && !p.muted);
+
+  const biquads = PATHS.length * 6 + Object.keys(buses).filter(k => buses[k].wall).length * 6;
+  pathCount.innerHTML =
+    `active paths: <b>${direct.length + refl.length}</b> · nodes built: ${PATHS.length} · possible: ${POSSIBLE}` +
+    (ctx ? ` · biquads: ${biquads}` : '') +
+    (PATHS.length < POSSIBLE ? ` <span class="hint">(${POSSIBLE - PATHS.length} pruned < ${CFG.reflectionGainFloorDb} dB)</span>` : '');
+
+  const itdL = (by.Lr.delay - by.Ll.delay) * 1000;
+  const itdR = (by.Rr.delay - by.Rl.delay) * 1000;
+  const combL = Math.abs(by.Rl.delay - by.Ll.delay);
+  const combR = Math.abs(by.Rr.delay - by.Lr.delay);
+  const nullF = dt => dt < 1e-9 ? Infinity : 1 / (2 * dt);
+  const fmtF  = f => f === Infinity ? '— (no comb)' : (f >= 1000 ? (f / 1000).toFixed(2) + ' kHz' : f.toFixed(0) + ' Hz');
+  const cls = dt => dt * 1000 > 1.5 ? 'bad' : dt * 1000 > 0.5 ? 'warn' : 'ok';
+  const cell = (cap, dt) => `
+    <div class="cell"><div class="cap">${cap}</div>
+      <div class="val ${cls(dt)}">${fmtF(nullF(dt))}</div>
+      <div class="sub">Δ ${(dt * 1000).toFixed(3)} ms</div></div>`;
+  nullBig.innerHTML = cell('1st null · left ear', combL) + cell('1st null · right ear', combR);
+
+  const pw = arr => arr.reduce((s, p) => s + p.gain * p.gain, 0);
+  const dr = dB(Math.sqrt(pw(direct))) - dB(Math.sqrt(pw(refl)) || 1e-12);
+  const loudRefl = refl.reduce((m, p) => Math.max(m, p.gain), 0);
+  const quietDir = direct.reduce((m, p) => Math.min(m, p.gain), Infinity);
+  const dominant = loudRefl < quietDir;
+  const drCls = !refl.length ? '' : dr > 6 ? 'ok' : dr > 0 ? 'warn' : 'bad';
+  const byOrder = [1, 2, 3].map(o => {
+    const n = refl.filter(p => p.order === o).length;
+    return n ? `${o}:${n}` : null;
+  }).filter(Boolean).join('  ');
+  const longest = solved.reduce((m, p) => p.muted ? m : Math.max(m, p.dist), 0);
+
+  anaBody.innerHTML = `
+    <tr><td>ITD (L speaker)</td><td>${itdL >= 0 ? '+' : ''}${itdL.toFixed(3)} ms</td></tr>
+    <tr><td>ITD (R speaker)</td><td>${itdR >= 0 ? '+' : ''}${itdR.toFixed(3)} ms</td></tr>
+    <tr><td>L/R arrival Δ @ left ear</td><td class="${cls(combL)}">${(combL * 1000).toFixed(3)} ms</td></tr>
+    <tr><td>L/R arrival Δ @ right ear</td><td class="${cls(combR)}">${(combR * 1000).toFixed(3)} ms</td></tr>
+    <tr><td>level Δ L/R ear (direct)</td><td>${(dB(by.Ll.gain + by.Rl.gain) - dB(by.Lr.gain + by.Rr.gain)).toFixed(2)} dB</td></tr>
+    <tr><td>direct / reflected ratio</td><td class="${drCls}">${refl.length ? dr.toFixed(2) + ' dB' : 'refl off'}</td></tr>
+    <tr><td>loudest refl vs quietest direct</td><td class="${dominant ? 'ok' : 'bad'}">${
+      refl.length ? (dB(loudRefl) - dB(quietDir)).toFixed(2) + ' dB ' + (dominant ? '✓' : '⚠ refl louder') : '—'}</td></tr>
+    <tr><td>active reflections by order</td><td>${byOrder || '—'}</td></tr>
+    <tr><td>longest active path</td><td>${longest.toFixed(2)} m → air ${(-AIR_ALPHA[5] * longest).toFixed(2)} dB @4k</td></tr>`;
+}
+
+/* ---- update entry point -------------------------------------------------- */
+let rafPending = false;
+function update() {
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => {
+    rafPending = false;
+    const solved = applyPaths();
+    draw(solved);
+    readout(solved);
+  });
+}
+
+/* ---- drag ---------------------------------------------------------------- */
+let dragging = false;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+function pointerPos(ev) {
+  const r = cv.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) * (cv.width / r.width),
+           y: (ev.clientY - r.top) * (cv.height / r.height) };
+}
+function moveListener(ev) {
+  const p = pointerPos(ev), m = px2m(p.x, p.y);
+  const margin = CFG.headWidth / 2 + 0.05;
+  listener.x = clamp(m.x, margin, CFG.room.w - margin);
+  listener.y = clamp(m.y, margin, CFG.room.d - margin);
+  update();
+}
+cv.addEventListener('pointerdown', ev => {
+  dragging = true; cv.classList.add('dragging');
+  cv.setPointerCapture(ev.pointerId); moveListener(ev);
+});
+cv.addEventListener('pointermove', ev => { if (dragging) moveListener(ev); });
+cv.addEventListener('pointerup', ev => {
+  dragging = false; cv.classList.remove('dragging');
+  try { cv.releasePointerCapture(ev.pointerId); } catch (e) {}
+});
+cv.addEventListener('pointercancel', () => { dragging = false; cv.classList.remove('dragging'); });
+
+/* ---- wiring -------------------------------------------------------------- */
+const playBtn   = document.getElementById('play');
+const stopBtn   = document.getElementById('stop');
+const loopEl    = document.getElementById('loop');
+const volEl     = document.getElementById('vol');
+const srcName   = document.getElementById('srcName');
+const coefEl    = document.getElementById('coef');
+const coefVal   = document.getElementById('coefVal');
+const coefOrders= document.getElementById('coefOrders');
+const pathCount = document.getElementById('pathCount');
+const listInfo  = document.getElementById('listInfo');
+const moreBtn   = document.getElementById('moreBtn');
+const show3El   = document.getElementById('show3');
+const airOnEl   = document.getElementById('airOn');
+const wallOnEl  = document.getElementById('wallOn');
+const presetEl  = document.getElementById('preset');
+
+playBtn.addEventListener('click', play);
+stopBtn.addEventListener('click', stop);
+loopEl.addEventListener('change', () => { if (srcNode) srcNode.loop = loopEl.checked; });
+volEl.addEventListener('input', () => {
+  if (master) master.gain.setTargetAtTime(parseFloat(volEl.value), ctx.currentTime, 0.02);
+});
+
+function showCoefOrders() {
+  const c = CFG.wallReflectionCoef;
+  coefOrders.textContent = `  →  1st ${dB(c).toFixed(1)}dB · 2nd ${dB(c*c).toFixed(1)}dB · 3rd ${dB(c*c*c).toFixed(1)}dB`;
+}
+
+document.getElementById('orderSeg').addEventListener('change', ev => {
+  CFG.maxOrder = parseInt(ev.target.value, 10);
+  rebuildGraph();
+});
+coefEl.addEventListener('input', () => {
+  CFG.wallReflectionCoef = parseFloat(coefEl.value);
+  coefVal.textContent = CFG.wallReflectionCoef.toFixed(2);
+  showCoefOrders(); update();
+});
+coefEl.addEventListener('change', rebuildGraph);
+
+// absorption toggles never rebuild the graph — the filters just ramp to flat
+airOnEl.addEventListener('change',  () => { CFG.airAbsorption = airOnEl.checked; update(); });
+wallOnEl.addEventListener('change', () => { CFG.wallColour = wallOnEl.checked; update(); });
+presetEl.addEventListener('change', () => {
+  CFG.wallPreset = presetEl.value; renderBandTable(); update();
+});
+
+show3El.addEventListener('change', () => { CFG.draw3rdOrder = show3El.checked; update(); });
+moreBtn.addEventListener('click', () => { showAll = !showAll; update(); });
+
+document.getElementById('file').addEventListener('change', async ev => {
+  const f = ev.target.files[0];
+  if (!f) return;
+  initAudio();
+  srcName.textContent = 'decoding…';
+  try {
+    const buf = await ctx.decodeAudioData(await f.arrayBuffer());
+    loadBuffer(buf, f.name);
+  } catch (e) { srcName.textContent = 'decode failed: ' + e.message; }
+});
+
+document.querySelectorAll('button.test').forEach(b =>
+  b.addEventListener('click', () => makeTestSignal(b.dataset.sig)));
+
+document.getElementById('center').addEventListener('click', () => {
+  listener.x = CFG.room.w / 2;
+  listener.y = CFG.speakerY + CFG.speakerSpan * Math.sqrt(3) / 2;
+  update();
+});
+
+buildEqMatrix(EQ_SR);
+showCoefOrders();
+renderBandTable();
+buildPaths();
+update();
+</script>
+</body>
+</html>
